@@ -7,7 +7,7 @@ import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
-from config import TELEGRAM_BOT_TOKEN, FETCH_INTERVAL_SECONDS
+from config import TELEGRAM_BOT_TOKEN, FETCH_INTERVAL_SECONDS, RENDER_EXTERNAL_URL
 from db import init_db, is_news_processed, mark_news_processed, save_news_detail, get_news_detail
 from news_fetcher import get_all_recent_news, fetch_article_body
 from classifier import classify_catalyst
@@ -143,6 +143,30 @@ async def process_news_pipeline(bot_instance=None):
 
     logger.info(f"Siklus selesai. {found_catalysts} katalis news-buying berhasil diproses dan dikirim.")
 
+async def keep_alive_task():
+    """
+    Timer anti-tidur Render:
+    Melakukan self-ping setiap 10 menit (600 detik) ke URL Render aplikasi
+    agar instance Free Tier Render mendeteksi traffic web aktif dan tidak masuk mode sleep/tidur.
+    """
+    await asyncio.sleep(30) # Tunggu 30 detik pertama hingga server siap
+    while True:
+        url = RENDER_EXTERNAL_URL
+        if url:
+            if not url.startswith("http"):
+                url = f"https://{url}"
+            try:
+                import requests
+                r = requests.get(url, timeout=10)
+                logger.info(f"⏰ [KEEP-ALIVE] Ping ke {url} berhasil (Status: {r.status_code}). Server tetap bangun!")
+            except Exception as e:
+                logger.warning(f"⏰ [KEEP-ALIVE] Gagal ping: {e}")
+        else:
+            logger.debug("⏰ [KEEP-ALIVE] RENDER_EXTERNAL_URL belum diset. Disarankan isi di env Render.")
+
+        # Ping setiap 10 menit (Render gratis biasanya tidur setelah 15 menit idle)
+        await asyncio.sleep(600)
+
 async def scheduler_task(app: Application):
     """Loop background yang mengecek berita setiap 2 jam secara otomatis."""
     while True:
@@ -159,6 +183,9 @@ async def scheduler_task(app: Application):
 async def lifespan(app: FastAPI):
     global tg_app
     init_db()
+
+    # Jalankan timer anti-tidur Render
+    asyncio.create_task(keep_alive_task())
 
     if TELEGRAM_BOT_TOKEN:
         # Inisialisasi bot Telegram
