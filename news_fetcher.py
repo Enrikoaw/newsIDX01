@@ -16,11 +16,10 @@ HEADERS = {
 
 def fetch_from_idxchannel() -> List[Dict[str, Any]]:
     """
-    Mengambil berita keterbukaan informasi dan aksi korporasi resmi 
-    eksklusif HANYA dari IDX Channel (Kanal Resmi Bursa Efek Indonesia / BEI).
+    [SUMBER UTAMA] Mengambil berita keterbukaan informasi dan aksi korporasi resmi 
+    dari IDX Channel (Kanal Resmi Bursa Efek Indonesia / BEI).
     """
     items = []
-    # Mengambil dari halaman Market News utama dan pagination untuk menangkap seluruh rilis terbaru
     urls = [
         "https://www.idxchannel.com/market-news",
         "https://www.idxchannel.com/market-news/2"
@@ -50,8 +49,39 @@ def fetch_from_idxchannel() -> List[Dict[str, Any]]:
             
     return items
 
+def fetch_from_backup_rss() -> List[Dict[str, Any]]:
+    """
+    [SUMBER SEKUNDER / BACKUP] Mengambil berita aksi korporasi & pasar modal
+    dari Kontan Investasi RSS Feed sebagai cadangan jika rilis di kanal utama terlambat.
+    """
+    items = []
+    url = "https://investasi.kontan.co.id/rss"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item")[:25]:
+                title_elem = item.find("title")
+                link_elem = item.find("link")
+                desc_elem = item.find("description")
+                
+                title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
+                link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+                desc = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
+                
+                if title and link:
+                    items.append({
+                        "title": title,
+                        "url": link,
+                        "content": desc,
+                        "source": "Kontan Pasar Modal (Backup)"
+                    })
+    except Exception as e:
+        logger.warning(f"Gagal mengambil RSS backup Kontan: {e}")
+    return items
+
 def fetch_article_body(url: str, source: str = "") -> str:
-    """Mengambil paragraf detail isi berita dari IDX Channel."""
+    """Mengambil paragraf detail isi berita dari URL sumber."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=8)
         if r.status_code != 200:
@@ -61,7 +91,9 @@ def fetch_article_body(url: str, source: str = "") -> str:
         container = (
             soup.find("div", class_="article--content") or 
             soup.find("div", class_="detail--article") or 
-            soup.find("div", class_="detail-content")
+            soup.find("div", class_="detail-content") or
+            soup.find("div", class_="content-container") or
+            soup.find("div", class_="tmpt-desk-kon")
         )
         if container:
             return container.get_text(" ", strip=True)[:1500]
@@ -74,9 +106,20 @@ def fetch_article_body(url: str, source: str = "") -> str:
 
 def get_all_recent_news() -> List[Dict[str, Any]]:
     """
-    Mengambil berita eksklusif HANYA dari Bursa Efek Indonesia (BEI / IDX).
-    Sumber eksternal selain BEI tidak digunakan.
+    Mengumpulkan seluruh berita keterbukaan dan aksi korporasi:
+    1. Sumber Utama: Kanal Resmi BEI (IDX Channel)
+    2. Sumber Sekunder: Kontan Investasi RSS Feed
     """
+    all_news = []
+    
+    # 1. Sumber Utama: BEI
     idx_items = fetch_from_idxchannel()
-    logger.info(f"Diperoleh {len(idx_items)} berita eksklusif dari IDX (Bursa Efek Indonesia).")
-    return idx_items
+    logger.info(f"Diperoleh {len(idx_items)} berita dari Kanal Resmi BEI.")
+    all_news.extend(idx_items)
+
+    # 2. Sumber Sekunder / Backup: Kontan Investasi RSS
+    backup_items = fetch_from_backup_rss()
+    logger.info(f"Diperoleh {len(backup_items)} berita dari Sumber Backup Kontan.")
+    all_news.extend(backup_items)
+
+    return all_news

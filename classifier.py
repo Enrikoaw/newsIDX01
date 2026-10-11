@@ -94,26 +94,48 @@ NEGATIVE_EXCLUSIONS = [
     r"pkpu"
 ]
 
+import os
+import json
+
+# Muat kamus pemetaan nama perusahaan ke kode saham 4 huruf jika file tersedia
+COMPANY_MAP = {}
+map_file = os.path.join(os.path.dirname(__file__), "idx_companies.json")
+if os.path.exists(map_file):
+    try:
+        with open(map_file, "r", encoding="utf-8") as f:
+            COMPANY_MAP = json.load(f)
+    except Exception as e:
+        pass
+
 def extract_ticker(text: str) -> Optional[str]:
-    """Ekstraksi kode saham 4 huruf kapital (misal BBRI, TLKM, MAHA)."""
+    """Ekstraksi kode saham 4 huruf kapital (misal BBRI, TLKM, MAHA) atau melalui pemetaan nama perusahaan."""
     # Jangan deteksi indeks pasar atau istilah umum sebagai ticker saham
     EXCLUDED_CODES = {"IHSG", "LQ45", "IDX30", "KOMPAS100", "BEI", "OJK", "BUMN", "APBN", "PDB", "FED"}
     
-    # Pola: (KODE) atau [KODE]
+    # 1. Cek Pola Kode Langsung: (KODE) atau [KODE]
     matches = re.findall(r'[\(\[]([A-Z]{4})[\)\]]', text)
     for m in matches:
         if m not in EXCLUDED_CODES:
             return m
     
-    # Pola kata kapital berjarak: misal "saham PTBA", "emiten BREN"
+    # 2. Cek Pola kata kapital berjarak: misal "saham PTBA", "emiten BREN"
     match = re.search(r'(?:saham|emiten|kode)\s+([A-Z]{4})\b', text)
     if match and match.group(1) not in EXCLUDED_CODES:
         return match.group(1)
         
-    # Pola di awal judul: misal "MAHA Amankan Kontrak..."
+    # 3. Cek Pola di awal judul: misal "MAHA Amankan Kontrak..."
     match = re.search(r'^([A-Z]{4})\b', text)
     if match and match.group(1) not in EXCLUDED_CODES:
         return match.group(1)
+
+    # 4. Cek Pemetaan Nama Perusahaan / Alias dari kamus idx_companies.json
+    text_lower = text.lower()
+    # Urutkan kunci berdasarkan panjang terpanjang ke terpendek agar 'bank bri' dicocokkan sebelum 'bri'
+    for name_key, ticker_code in sorted(COMPANY_MAP.items(), key=lambda x: len(x[0]), reverse=True):
+        if len(name_key) >= 4:
+            pattern = r'\b' + re.escape(name_key) + r'\b'
+            if re.search(pattern, text_lower):
+                return ticker_code
         
     return None
 
