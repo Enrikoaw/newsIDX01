@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: idx-news-catalyst-bot
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FETCH_INTERVAL_SECONDS
+        value: 7200
