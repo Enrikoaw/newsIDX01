@@ -1,5 +1,9 @@
 import asyncio
+import os
 import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import uvicorn
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
@@ -15,6 +19,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("IDXNewsBot")
+
+# Global telegram application instance
+tg_app: Application = None
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menangani aksi klik tombol 'Selengkapnya' dan 'Tutup' dari pengguna di Telegram."""
@@ -67,7 +74,7 @@ async def process_news_pipeline(bot_instance=None):
     """Menjalankan 1 siklus pengecekan, penyaringan, analisis, dan pengiriman notifikasi ringkas."""
     logger.info("Memulai siklus pengecekan keterbukaan informasi emiten BEI...")
     news_list = get_all_recent_news()
-    logger.info(f"Total berita ditemukan di internet: {len(news_list)}")
+    logger.info(f"Total berita ditemukan: {len(news_list)}")
 
     found_catalysts = 0
 
@@ -116,7 +123,7 @@ async def process_news_pipeline(bot_instance=None):
             "category": category,
             "title": title,
             "url": url,
-            "source": item.get("source", "BEI Portal"),
+            "source": item.get("source", "BEI"),
             "sentiment": analysis["sentiment"],
             "entry": analysis["entry"],
             "risk": analysis["risk"]
@@ -147,32 +154,53 @@ async def scheduler_task(app: Application):
         logger.info(f"Menunggu {FETCH_INTERVAL_SECONDS} detik untuk siklus berikutnya...")
         await asyncio.sleep(FETCH_INTERVAL_SECONDS)
 
-async def post_init(app: Application):
-    """Memicu background scheduler sesaat setelah Telegram Application siap."""
-    asyncio.create_task(scheduler_task(app))
-
-def main():
-    """Menjalankan bot Telegram dengan CallbackQueryHandler dan Scheduler 2 jam."""
+# --- FASTAPI WEB SERVER (HEALTH CHECK UNTUK RENDER WEB SERVICE) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global tg_app
     init_db()
 
-    if not TELEGRAM_BOT_TOKEN:
-        logger.warning("TELEGRAM_BOT_TOKEN belum diset. Menjalankan simulasi pipeline ringkas...")
-        asyncio.run(process_news_pipeline())
-        return
+    if TELEGRAM_BOT_TOKEN:
+        # Inisialisasi bot Telegram
+        tg_app = (
+            Application.builder()
+            .token(TELEGRAM_BOT_TOKEN)
+            .build()
+        )
+        tg_app.add_handler(CallbackQueryHandler(handle_callback_query))
+        
+        await tg_app.initialize()
+        await tg_app.start()
+        # Polling dengan drop_pending_updates agar tidak konflik
+        await tg_app.updater.start_polling(drop_pending_updates=True)
+        logger.info("Telegram Bot Polling dimulai.")
 
-    # Inisialisasi Bot Telegram dengan polling & event loop
-    application = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+        # Jalankan background scheduler
+        scheduler_job = asyncio.create_task(scheduler_task(tg_app))
+    else:
+        logger.warning("TELEGRAM_BOT_TOKEN belum diset.")
+        scheduler_job = None
 
-    # Tambahkan handler untuk tombol 'Selengkapnya' dan 'Tutup'
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
+    yield
 
-    logger.info("Bot Telegram aktif dengan listener tombol 'Selengkapnya'. Memulai polling...")
-    application.run_polling()
+    # Cleanup saat server shutdown
+    if tg_app:
+        logger.info("Menghentikan Telegram Bot...")
+        if scheduler_job:
+            scheduler_job.cancel()
+        await tg_app.updater.stop()
+        await tg_app.stop()
+        await tg_app.shutdown()
+
+api_app = FastAPI(title="IDX News Bot API", lifespan=lifespan)
+
+@api_app.get("/")
+def health_check():
+    return {"status": "ok", "message": "IDX News Catalyst Bot is running 24/7!"}
+
+def main():
+    port = int(os.getenv("PORT", "10000"))
+    uvicorn.run("main:api_app", host="0.0.0.0", port=port, log_level="info")
 
 if __name__ == "__main__":
     main()
